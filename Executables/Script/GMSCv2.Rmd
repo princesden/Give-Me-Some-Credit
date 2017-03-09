@@ -1,0 +1,469 @@
+---
+title: "GMSC"
+author: "Princewill Eneh"
+date: "November 17, 2015"
+output: html_document
+---
+
+```{r, echo=FALSE}
+
+# Autor: Princewill Eneh
+# Date : October 24, 2015
+
+# libraries
+library(boot) # Require for cross validation
+library(ggplot2) # Ggplot
+library(glmnet) # for regularization
+library(Amelia) # Required for imputation
+library(dplyr) # Require for Normalization
+library(tree) #fitting Decision trees
+library(caret) #for Confusion matrix
+library(rpart) # Support Vector Machine
+library("e1071") #SVM
+library(kernlab) #svm
+library(MASS) #LDA
+library(neuralnet) #ANN
+library(sampling) #for stratified sampling 
+library(ROCR) # ROC
+```
+
+#Import Data
+
+
+```{r}
+train <- read.csv("/Users/Princewill/Onedrive/Knowledge/Datasets/Give Me Some Credit/cs-training.csv")
+```
+
+#Explore Date
+
+```{r}
+str(train)
+head(train)
+names(train)
+```
+
+#Data Cleansing Process
+
+
+```{r}
+train[1] <- NULL
+```
+
+#Imputation
+
+
+```{r}
+train<-na.omit(train) # Just remove rows with missing values
+```
+
+
+#Stratified Sampling
+
+```{r}
+stratified01 <- subset(train, SeriousDlqin2yrs == "1") #find all 1s
+stratified00 <- subset(train, SeriousDlqin2yrs == "0") #find all 0s
+stratified02 <-stratified00[1:8357,]
+
+stratified<-rbind(stratified01,stratified02)
+```
+
+
+#Shuffle
+
+```{r}
+train <- stratified[sample(nrow(stratified)),]
+
+#remove unused data
+rm(stratified01)
+rm(stratified00)
+rm(stratified02)
+rm(stratified)
+```
+
+
+#Normalization 
+
+```{r}
+train<-train %>% mutate_each_(funs(scale),vars=c("RevolvingUtilizationOfUnsecuredLines","age","NumberOfTime30.59DaysPastDueNotWorse",
+                                                 "DebtRatio","MonthlyIncome","NumberOfOpenCreditLinesAndLoans","NumberOfTimes90DaysLate",
+                                                 "NumberRealEstateLoansOrLines","NumberOfTime60.89DaysPastDueNotWorse","NumberOfDependents")) # Here you chose what colums you want to normalize
+```
+
+      
+#Split into Training and Test Data
+
+```{r}
+set.seed(2)
+Train <-sample(1:nrow(train), nrow(train)/2)
+Test = -Train
+training_data = train[Train,]
+testing_data =  train[Test,]
+testing_SeriousDlqin2yrs = train$SeriousDlqin2yrs[Test]
+
+```
+
+
+#Check for Missing Data
+
+```{r}
+sapply(train,function(x) sum(is.na(x))) # See the number of missing values
+sapply(train, function(x) length(unique(x)))
+```
+
+
+
+#                 Regularization
+
+# RIDGE
+```{r}
+x.tr <- model.matrix(SeriousDlqin2yrs ~ RevolvingUtilizationOfUnsecuredLines  + age + NumberOfTime30.59DaysPastDueNotWorse  
+                     + DebtRatio  + MonthlyIncome +NumberOfOpenCreditLinesAndLoans + NumberOfTimes90DaysLate +  
+                       NumberRealEstateLoansOrLines +  NumberOfTime60.89DaysPastDueNotWorse
+                     + NumberOfDependents, data = training_data)[, -1]
+y.tr <- training_data$SeriousDlqin2yrs
+
+
+x.val <- model.matrix(SeriousDlqin2yrs ~ RevolvingUtilizationOfUnsecuredLines  + age + NumberOfTime30.59DaysPastDueNotWorse  
+                      + DebtRatio  + MonthlyIncome +NumberOfOpenCreditLinesAndLoans + NumberOfTimes90DaysLate +  
+                        NumberRealEstateLoansOrLines +  NumberOfTime60.89DaysPastDueNotWorse
+                      + NumberOfDependents, data = testing_data)[, -1]
+y.val <- testing_data$SeriousDlqin2yrs
+
+```
+
+# Cross Validation to obtain best lambda
+
+```{r}
+set.seed(10)
+rr.cv <- cv.glmnet(x.tr, y.tr, alpha = 0)
+
+```
+
+```{r, echo=FALSE}
+plot(rr.cv)
+```
+
+```{r}
+rr.bestlam <- rr.cv$lambda.min
+rr.goodlam <- rr.cv$lambda.1se
+
+```
+
+# predict validation set using best lambda and calculate RMSE
+
+```{r}
+rr.fit <- glmnet(x.tr, y.tr, alpha = 0)
+```
+
+```{r, echo=FALSE}
+plot(rr.fit, xvar = "lambda", label = TRUE)
+```
+
+```{r}
+rr.pred <- predict(rr.fit, s = rr.bestlam, newx = x.val)
+rr.pred  <- ifelse(rr.pred  > 0.5,1,0)
+```
+
+
+```{r}
+table(rr.pred ,testing_data[,1 ])
+
+```
+
+```{r}
+MSE <-mean(rr.pred != testing_SeriousDlqin2yrs)
+MSE
+```
+
+```{r}
+print(paste('Accuracy',(1-MSE)*100,"%"))
+
+sqrt(mean((rr.pred - y.val)^2))
+```
+
+#LASSO
+
+# CV to obtain best lambda
+
+```{r}
+set.seed(10)
+las.cv <- cv.glmnet(x.tr, y.tr, alpha = 1)
+```
+
+```{r, echo=FALSE}
+plot(las.cv)
+
+```
+
+```{r}
+las.bestlam <- las.cv$lambda.min
+las.goodlam <- las.cv$lambda.1se
+```
+
+# predict validation set using best lambda and calculate RMSE
+```{r}
+las.fit <- glmnet(x.tr, y.tr, alpha = 1)
+```
+
+```{r, echo=FALSE}
+plot(las.fit, xvar = "lambda", label = TRUE)
+```
+
+```{r}
+las.pred <- predict(las.fit, s = las.bestlam, newx = x.val)
+
+las.pred <- ifelse(las.pred > 0.5,1,0)
+table(las.pred,testing_data[,1 ])
+```
+
+```{r}
+MSE <-mean(las.pred != testing_SeriousDlqin2yrs)
+MSE
+```
+
+```{r}
+print(paste('Accuracy',(1-MSE)*100,"%"))
+
+sqrt(mean((las.pred - y.val)^2))
+```
+
+
+#---------LOGISTIC REGRESSION---------#
+
+
+```{r}
+glmdl <- glm(SeriousDlqin2yrs ~.,family=binomial(link='logit'),data=training_data)
+summary(glmdl)
+```
+
+
+```{r}
+#Cross validation
+
+#LOOCV
+
+#cv.glmdl<-cv.glm(glmdl, data = training_data)$delta[1]
+#cv.glmdl
+
+#KFCV
+
+cv.glmdl<- cv.glm(training_data, glmdl, K=6)$delta[1]
+cv.glmdl
+
+```
+
+
+```{r, echo=FALSE}
+plot(glmdl)
+```
+
+```{r}
+glmdlpredict <- predict(glmdl,testing_data,type='response')
+glmdlpredict <- ifelse(glmdlpredict > 0.5,1,0)
+```
+
+```{r}
+
+table(glmdlpredict,testing_data[,1 ])
+```
+
+```{r}
+MSE <-mean(glmdlpredict != testing_SeriousDlqin2yrs)
+MSE
+```
+
+```{r}
+
+print(paste('Accuracy',(1-MSE)*100,"%"))
+
+sqrt(mean((glmdlpredict - testing_data$SeriousDlqin2yrs)^2))
+
+
+confusionMatrix(glmdlpredict, testing_SeriousDlqin2yrs)
+
+glmroc<-prediction(glmdlpredict, testing_SeriousDlqin2yrs, label.ordering = NULL)
+
+glmroc.perf <- performance(glmroc, measure = "tpr", x.measure = "fpr")
+plot(glmroc.perf, col = "dark red")
+abline(a=0, b= 1)
+
+auc.perf <-performance(glmroc, measure = "auc")
+auc.perf@y.values
+
+```
+
+
+#LDA
+
+```{r}
+ldamdl<-lda(SeriousDlqin2yrs ~., data = training_data)
+ldamdl
+```
+
+```{r, echo=FALSE}
+plot(ldamdl)
+```
+
+```{r}
+ldamdlpredict<-predict(ldamdl, newdata = testing_data[,c(2,3,4,5,6,7,8,9,10,11)])$class
+```
+
+```{r}
+table(ldamdlpredict,testing_data[,1 ])
+```
+
+```{r}
+MSE <-mean(ldamdlpredict != testing_SeriousDlqin2yrs)
+MSE
+print(paste('Accuracy',(1-MSE)*100,"%"))
+
+
+confusionMatrix(ldamdlpredict, testing_SeriousDlqin2yrs)
+
+ldamdlpredict<- as.numeric(ldamdlpredict)
+
+ldaroc<-prediction(ldamdlpredict, testing_SeriousDlqin2yrs, label.ordering = NULL)
+
+ldaroc.perf <- performance(ldaroc, measure = "tpr", x.measure = "fpr")
+plot(ldaroc.perf, col = "dark red")
+abline(a=0, b= 1)
+
+auc.perf <-performance(ldaroc, measure = "auc")
+auc.perf@y.values
+
+
+
+```
+
+
+#SVM
+
+```{r}
+svmmdl <- ksvm(SeriousDlqin2yrs ~ ., data=training_data, type = "C-svc", kernel = "rbfdot",kpar = list(sigma = 0.1), C = 10, prob.model = TRUE)
+
+
+svmmdl
+#plot(svmmdl)
+
+```
+
+```{r}
+svmmdlpredict <- predict(svmmdl,testing_data[,c(2,3,4,5,6,7,8,9,10,11)])
+table(svmmdlpredict,testing_data[,1 ])
+```
+
+```{r}
+MSE <-mean(svmmdlpredict != testing_SeriousDlqin2yrs)
+MSE
+print(paste('Accuracy',(1-MSE)*100,"%"))
+
+
+confusionMatrix(svmmdlpredict, testing_SeriousDlqin2yrs)
+
+svmmdlpredict<- as.numeric(svmmdlpredict)
+
+svmroc<-prediction(svmmdlpredict, testing_SeriousDlqin2yrs, label.ordering = NULL)
+
+svmroc.perf <- performance(svmroc, measure = "tpr", x.measure = "fpr")
+plot(svmroc.perf, col = "dark red")
+abline(a=0, b= 1)
+
+auc.perf <-performance(svmroc, measure = "auc")
+auc.perf@y.values
+
+```
+
+
+#ANN
+
+```{r}
+nnmdl <- neuralnet(SeriousDlqin2yrs ~ RevolvingUtilizationOfUnsecuredLines  + age + NumberOfTime30.59DaysPastDueNotWorse  
+                      + DebtRatio  + MonthlyIncome +NumberOfOpenCreditLinesAndLoans + NumberOfTimes90DaysLate +  
+                        NumberRealEstateLoansOrLines +  NumberOfTime60.89DaysPastDueNotWorse
+                      + NumberOfDependents, data = training_data, hidden=2, threshold=0.01)
+
+
+```
+
+```{r, echo=FALSE}
+#plot(nnmdl)
+
+```
+
+```{r}
+#nnmdlpredict <- compute(nnmdl, testing_data[,c(2,3,4,5,6,7,8,9,10,11)])
+
+#results <- data.frame(actual = testing_SeriousDlqin2yrs, prediction = nnmdlpredict$net.result)
+#nnmdlpredict <- round(results$prediction)
+```
+
+```{r}
+#table(nnmdlpredict,testing_data[,1 ])
+```
+
+```{r}
+#MSE <-mean(nnmdlpredict != testing_SeriousDlqin2yrs)
+#MSE
+
+#print(paste('Accuracy',(1-MSE)*100,"%"))
+
+
+#confusionMatrix(nnmdlpredict, testing_SeriousDlqin2yrs)
+
+#nnmdlpredict<- as.numeric(nnmdlpredict)
+
+#nnroc<-prediction(nnmdlpredict, testing_SeriousDlqin2yrs, label.ordering = NULL)
+
+#nnroc.perf <- performance(nnroc, measure = "tpr", x.measure = "fpr")
+#plot(nnroc.perf, col = "dark red")
+#abline(a=0, b= 1)
+
+#auc.perf <-performance(nnroc, measure = "auc")
+#auc.perf@y.values
+
+```
+
+#RANDOM FOREST
+```{r}
+set.seed(100)
+rfmdl <- randomForest(training_data[,-c(1,2,7,12)], factor(training_data$SeriousDlqin2yrs),
+                   sampsize=1000, do.trace=TRUE, importance=TRUE, ntree=500, forest=TRUE)
+plot(rfmdl)
+
+rfmdlpredict <- data.frame(SeriousDlqin2yrs=predict(rfmdl,testing_data[,-c(1,2,7,12)],type="prob")[,2])
+rfmdlpredict <- ifelse(rfmdlpredict > 0.5,1,0)
+
+table(rfmdlpredict,testing_data[,1 ])
+MSE <-mean(rfmdlpredict != testing_SeriousDlqin2yrs)
+MSE
+print(paste('Accuracy',(1-MSE)*100,"%"))
+
+confusionMatrix(rfmdlpredict, testing_SeriousDlqin2yrs)
+
+rfmdlpredict<- as.numeric(rfmdlpredict)
+
+rfroc<-prediction(rfmdlpredict, testing_SeriousDlqin2yrs, label.ordering = NULL)
+
+rfroc.perf <- performance(rfroc, measure = "tpr", x.measure = "fpr")
+plot(rfroc.perf, col = "dark red")
+abline(a=0, b= 1)
+
+auc.perf <-performance(rfroc, measure = "auc")
+auc.perf@y.values
+```
+
+
+#plot all ROCS
+```{r}
+plot( glmroc.perf, col = "dark red")
+plot(ldaroc.perf, add = TRUE, col = "green")
+plot(svmroc.perf, add = TRUE, col = "blue")
+#plot(nnroc.perf, add = TRUE, col = "black")
+grid()
+abline(a=0, b= 1)
+text(.8,.9,"ANN")
+text(.28,.6,"GLM")
+text(.15,.6,"SVM")
+text(.2,.35,"LDA")
+
+```
